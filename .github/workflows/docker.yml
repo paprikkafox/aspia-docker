@@ -1,0 +1,126 @@
+# Build the Aspia Router + Relay image and push it to the GitHub Container Registry (ghcr.io).
+#
+# Triggers:
+#   * push to main/master  -> tagged with the branch name and the commit sha
+#   * push of a v* tag     -> tagged with the semver (3.0.23, 3.0) and "latest"
+#   * pull request         -> built and smoke-tested, not pushed
+#   * manual run           -> optional "aspia_version" input
+#
+name: docker
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      aspia_version:
+        description: "Aspia version to install, e.g. 3.0.23 (empty = the git tag or the default)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # GHCR requires a lowercase image name; the repository name may contain uppercase.
+      - name: Compute image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine Aspia version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.aspia_version }}" ]; then
+            ver="${{ inputs.aspia_version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "${GITHUB_REF_NAME}" ]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="3.0.23"
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+
+      # Read the expected package hashes from the release metadata with an authenticated
+      # request (the anonymous API has a low rate limit). The Dockerfile verifies the
+      # downloads against these values.
+      - name: Fetch expected SHA-256 from the release metadata
+        id: digests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASPIA_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/dchapyshev/aspia/releases/tags/v${ASPIA_VERSION}"
+          json="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "$api")"
+          router="$(printf '%s' "$json" | jq -r --arg n "aspia-router-${ASPIA_VERSION}-x86_64.deb" \
+            '.assets[] | select(.name==$n) | .digest // empty')"
+          relay="$(printf '%s' "$json" | jq -r --arg n "aspia-relay-${ASPIA_VERSION}-x86_64.deb" \
+            '.assets[] | select(.name==$n) | .digest // empty')"
+          echo "router=${router#sha256:}" >> "$GITHUB_OUTPUT"
+          echo "relay=${relay#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+
+      # The packages are x86_64 only, so the image is linux/amd64.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            ASPIA_VERSION=${{ steps.ver.outputs.version }}
+            ROUTER_DEB_SHA256=${{ steps.digests.outputs.router }}
+            RELAY_DEB_SHA256=${{ steps.digests.outputs.relay }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
+
+      - name: Smoke test (pull request only)
+        if: github.event_name == 'pull_request'
+        run: docker run --rm "$(echo "${{ steps.meta.outputs.tags }}" | head -n1)" --version

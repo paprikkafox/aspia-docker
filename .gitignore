@@ -1,0 +1,3 @@
+# Runtime data of the compose stack (private keys, database, .env)
+data/
+.env
