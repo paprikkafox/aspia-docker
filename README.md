@@ -3,13 +3,18 @@
 Router and Relay for Aspia 3.x. Docker Compose manages the two containers, and all data lives
 in the `./data` directory next to `docker-compose.yml`.
 
+The stack runs in **host network mode** (`network_mode: host`): both containers share the host
+network stack, so the service ports are opened on the host directly, without NAT or port
+mapping, and the services see the host's real addresses.
+
 > Russian documentation: [README.ru.md](README.ru.md).
 
 ## Requirements
 
 - Docker Engine and Docker Compose v2.
 - **x86_64** (amd64): the image and the Aspia packages are amd64 only.
-- A public address for the Router and for the Relay; the ports opened (see below).
+- A public address for the Router and for the Relay; the ports opened on the host (see below).
+- Host networking (`network_mode: host`), which is Linux-only.
 
 ## What to take from the repository
 
@@ -87,7 +92,7 @@ the source of truth, and `.env` can be emptied.
 | --------------------------------- | -------- | -------------------------------------------------------------- |
 | `ASPIA_RELAY_PEER_PUBLIC_ADDRESS` | —        | **required**: the Relay address used by Hosts and Clients      |
 | `ASPIA_VERSION`                   | `3.0.23` | Aspia version (image tag)                                      |
-| `ASPIA_RELAY_ROUTER_ADDRESS`      | `router` | Router address used by the Relay (inside compose)              |
+| `ASPIA_RELAY_ROUTER_ADDRESS`      | `127.0.0.1` | Router address used by the Relay (loopback in host mode)    |
 | `ASPIA_LOG_LEVEL`                 | `1`      | 0 trace … 4 fatal                                              |
 
 A variable overrides the value in `./data/config/*.conf` on every start. To manage settings only
@@ -106,6 +111,9 @@ Backup and migration are just copying the `./data` directory. The configs hold t
 so treat `./data` as a secret.
 
 ## Ports
+
+In host network mode these ports are opened directly on the host (nothing is published through
+a proxy or NAT), so the firewall rules above apply to them as-is.
 
 | Port | Protocol | Component | Purpose                |
 | ---- | -------- | --------- | ---------------------- |

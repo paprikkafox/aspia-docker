@@ -3,6 +3,9 @@
 # Start:  docker compose up -d
 # Image:  ghcr.io/paprikkafox/aspia-docker (pulled from GHCR; nothing is built locally)
 # Data:   the ./data directory next to this file (plain directories, easy to back up/move)
+#
+# Networking: host mode. Both containers use the host network stack directly, so the
+# service ports are opened on the host as-is (no NAT / port mapping). See README.md.
 
 name: aspia
 
@@ -11,27 +14,25 @@ services:
     image: ghcr.io/paprikkafox/aspia-docker:${ASPIA_VERSION:-3.0.23}
     restart: unless-stopped
     command: router
+    network_mode: host
     environment:
       ASPIA_LOG_LEVEL: ${ASPIA_LOG_LEVEL:-1}
     volumes:
       - ./data/config:/etc/aspia
       - ./data/router:/var/lib/aspia
-    ports:
-      - "8060-8063:8060-8063/tcp"   # Hosts (8060/8061), Clients (8062), Relays (8063)
-      - "8065:8065/udp"             # STUN
 
   relay:
     image: ghcr.io/paprikkafox/aspia-docker:${ASPIA_VERSION:-3.0.23}
     restart: unless-stopped
     command: relay
+    network_mode: host
     depends_on:
       - router
     environment:
       ASPIA_LOG_LEVEL: ${ASPIA_LOG_LEVEL:-1}
-      ASPIA_RELAY_ROUTER_ADDRESS: ${ASPIA_RELAY_ROUTER_ADDRESS:-router}
+      # Host networking has no service-name DNS: the Router is reached on loopback.
+      ASPIA_RELAY_ROUTER_ADDRESS: ${ASPIA_RELAY_ROUTER_ADDRESS:-127.0.0.1}
       ASPIA_RELAY_ROUTER_PORT: ${ASPIA_RELAY_ROUTER_PORT:-8063}
       ASPIA_RELAY_PEER_PUBLIC_ADDRESS: ${ASPIA_RELAY_PEER_PUBLIC_ADDRESS:-}
     volumes:
       - ./data/config:/etc/aspia
-    ports:
-      - "8070:8070/tcp"             # peers (Hosts and Clients)
